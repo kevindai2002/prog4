@@ -26,6 +26,9 @@ var triangleBuffers = []; // lists of indices into vertexBuffers by set, in trip
 var viewDelta = 0; // how much to displace view with each key press
 var textureArray = []; // array of loaded textures by set
 var blendMode = 0; // 0 = modulate, 1 = replace
+var useLighting = true; // whether to use lighting (false for Part 2, true for Parts 3-4)
+var part5Mode = false; // flag for part 5 "make it your own" mode
+var ellipsoidTexture = null; // texture for ellipsoids in part 5
 
 /* shader parameter locations */
 var vPosAttribLoc; // where to put position for vertex shader
@@ -41,6 +44,7 @@ var textureULoc; // where to put texture sampler for fragment shader
 var useTextureULoc; // whether to use texture
 var blendModeULoc; // blend mode for texture and lighting
 var alphaULoc; // alpha value for transparency
+var useLightingULoc; // whether to use lighting
 
 /* interaction variables */
 var Eye = vec3.clone(defaultEye); // eye position in world space
@@ -268,6 +272,16 @@ function handleKeyDown(event) {
             blendMode = (blendMode + 1) % 2; // toggle between 0 (modulate) and 1 (replace)
             console.log("Blend mode: " + (blendMode === 0 ? "modulate" : "replace"));
             break;
+        case "KeyN": // toggle lighting (N for "no lighting" - Part 2 mode)
+            useLighting = !useLighting;
+            console.log("Lighting: " + (useLighting ? "ON" : "OFF"));
+            break;
+        case "Digit1": // toggle part 5 mode with '!' key
+            if (event.getModifierState("Shift")) { // Shift+1 = !
+                part5Mode = !part5Mode;
+                console.log("Part 5 mode: " + (part5Mode ? "ON" : "OFF"));
+            }
+            break;
     } // end switch
 } // end handleKeyDown
 
@@ -315,7 +329,7 @@ function loadModels() {
     
     // make an ellipsoid, with numLongSteps longitudes.
     // start with a sphere of radius 1 at origin
-    // Returns verts, tris and normals.
+    // Returns verts, tris, normals, and uvs.
     function makeEllipsoid(currEllipsoid,numLongSteps) {
         
         try {
@@ -327,18 +341,29 @@ function loadModels() {
             
                 console.log("ellipsoid xyz: "+ ellipsoid.x +" "+ ellipsoid.y +" "+ ellipsoid.z);
                 
-                // make vertices
+                // make vertices and UVs
                 var ellipsoidVertices = [0,-1,0]; // vertices to return, init to south pole
-                var angleIncr = (Math.PI+Math.PI) / numLongSteps; // angular increment 
+                var ellipsoidUVs = [0.5, 0.0]; // UVs to return, init to south pole UV
+                var angleIncr = (Math.PI+Math.PI) / numLongSteps; // angular increment
                 var latLimitAngle = angleIncr * (Math.floor(numLongSteps/4)-1); // start/end lat angle
                 var latRadius, latY; // radius and Y at current latitude
+                var latIndex = 0;
                 for (var latAngle=-latLimitAngle; latAngle<=latLimitAngle; latAngle+=angleIncr) {
                     latRadius = Math.cos(latAngle); // radius of current latitude
                     latY = Math.sin(latAngle); // height at current latitude
-                    for (var longAngle=0; longAngle<2*Math.PI; longAngle+=angleIncr) // for each long
+                    var longIndex = 0;
+                    for (var longAngle=0; longAngle<2*Math.PI; longAngle+=angleIncr) { // for each long
                         ellipsoidVertices.push(latRadius*Math.sin(longAngle),latY,latRadius*Math.cos(longAngle));
+                        // Generate UV coordinates (spherical mapping)
+                        var u = 1.0 - (longIndex / numLongSteps);
+                        var v = (latIndex + 1) / (numLongSteps/2);
+                        ellipsoidUVs.push(u, v);
+                        longIndex++;
+                    }
+                    latIndex++;
                 } // end for each latitude
                 ellipsoidVertices.push(0,1,0); // add north pole
+                ellipsoidUVs.push(0.5, 1.0); // add north pole UV
                 ellipsoidVertices = ellipsoidVertices.map(function(val,idx) { // position and scale ellipsoid
                     switch (idx % 3) {
                         case 0: // x
@@ -384,7 +409,7 @@ function loadModels() {
                 ellipsoidTriangles.push(ellipsoidVertices.length/3-2,ellipsoidVertices.length/3-1,
                                         ellipsoidVertices.length/3-numLongSteps-1); // longitude wrap
             } // end if good number longitude steps
-            return({vertices:ellipsoidVertices, normals:ellipsoidNormals, triangles:ellipsoidTriangles});
+            return({vertices:ellipsoidVertices, normals:ellipsoidNormals, triangles:ellipsoidTriangles, uvs:ellipsoidUVs});
         } // end try
         
         catch(e) {
@@ -504,14 +529,17 @@ function loadModels() {
                     // make the ellipsoid model
                     ellipsoidModel = makeEllipsoid(ellipsoid,32);
     
-                    // send the ellipsoid vertex coords and normals to webGL
+                    // send the ellipsoid vertex coords, normals, and UVs to webGL
                     vertexBuffers.push(gl.createBuffer()); // init empty webgl ellipsoid vertex coord buffer
                     gl.bindBuffer(gl.ARRAY_BUFFER,vertexBuffers[vertexBuffers.length-1]); // activate that buffer
                     gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(ellipsoidModel.vertices),gl.STATIC_DRAW); // data in
                     normalBuffers.push(gl.createBuffer()); // init empty webgl ellipsoid vertex normal buffer
                     gl.bindBuffer(gl.ARRAY_BUFFER,normalBuffers[normalBuffers.length-1]); // activate that buffer
                     gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(ellipsoidModel.normals),gl.STATIC_DRAW); // data in
-        
+                    uvBuffers.push(gl.createBuffer()); // init empty webgl ellipsoid uv buffer
+                    gl.bindBuffer(gl.ARRAY_BUFFER,uvBuffers[uvBuffers.length-1]); // activate that buffer
+                    gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(ellipsoidModel.uvs),gl.STATIC_DRAW); // data in
+
                     triSetSizes.push(ellipsoidModel.triangles.length);
     
                     // send the triangle indices to webGL
@@ -519,7 +547,11 @@ function loadModels() {
                     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, triangleBuffers[triangleBuffers.length-1]); // activate that buffer
                     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,new Uint16Array(ellipsoidModel.triangles),gl.STATIC_DRAW); // data in
                 } // end for each ellipsoid
-                
+
+                // Load texture for ellipsoids (for part 5)
+                var ellipsoidTextureURL = INPUT_TRIANGLES_URL.substring(0, INPUT_TRIANGLES_URL.lastIndexOf("/") + 1) + "images.jpeg";
+                ellipsoidTexture = loadTexture(ellipsoidTextureURL);
+
                 viewDelta = vec3.length(vec3.subtract(temp,maxCorner,minCorner)) / 100; // set global
             } // end if ellipsoid file loaded
         } // end if triangle file loaded
@@ -586,6 +618,7 @@ function setupShaders() {
         uniform bool uUseTexture; // whether to use texture
         uniform int uBlendMode; // 0 = modulate, 1 = replace
         uniform float uAlpha; // alpha value for transparency
+        uniform bool uUseLighting; // whether to use lighting
 
         // geometry properties
         varying vec3 vWorldPos; // world xyz of fragment
@@ -594,40 +627,46 @@ function setupShaders() {
 
         void main(void) {
 
-            // ambient term
-            vec3 ambient = uAmbient*uLightAmbient;
+            vec3 litColor;
+            if (uUseLighting) {
+                // ambient term
+                vec3 ambient = uAmbient*uLightAmbient;
 
-            // diffuse term
-            vec3 normal = normalize(vVertexNormal);
-            vec3 light = normalize(uLightPosition - vWorldPos);
-            float lambert = max(0.0,dot(normal,light));
-            vec3 diffuse = uDiffuse*uLightDiffuse*lambert; // diffuse term
+                // diffuse term
+                vec3 normal = normalize(vVertexNormal);
+                vec3 light = normalize(uLightPosition - vWorldPos);
+                float lambert = max(0.0,dot(normal,light));
+                vec3 diffuse = uDiffuse*uLightDiffuse*lambert; // diffuse term
 
-            // specular term
-            vec3 eye = normalize(uEyePosition - vWorldPos);
-            vec3 halfVec = normalize(light+eye);
-            float highlight = pow(max(0.0,dot(normal,halfVec)),uShininess);
-            vec3 specular = uSpecular*uLightSpecular*highlight; // specular term
+                // specular term
+                vec3 eye = normalize(uEyePosition - vWorldPos);
+                vec3 halfVec = normalize(light+eye);
+                float highlight = pow(max(0.0,dot(normal,halfVec)),uShininess);
+                vec3 specular = uSpecular*uLightSpecular*highlight; // specular term
 
-            // combine lighting
-            vec3 litColor = ambient + diffuse + specular;
+                // combine lighting
+                litColor = ambient + diffuse + specular;
+            } else {
+                // no lighting, use white as base color
+                litColor = vec3(1.0, 1.0, 1.0);
+            }
 
             // apply texture if available
             vec3 colorOut;
             float finalAlpha = uAlpha;
             if (uUseTexture) {
                 vec4 texColor = texture2D(uTexture, vTexCoord);
-                if (uBlendMode == 0) {
-                    // modulate: multiply texture with lighting
+                if (uUseLighting && uBlendMode == 0) {
+                    // modulate: multiply texture with lighting (only when lighting is on)
                     colorOut = litColor * texColor.rgb;
                 } else {
-                    // replace: use texture color directly
+                    // replace: use texture color directly (Part 2: unlit texture)
                     colorOut = texColor.rgb;
                 }
                 // use texture alpha combined with material alpha
                 finalAlpha = texColor.a * uAlpha;
             } else {
-                // no texture, just use lighting
+                // no texture, just use lighting (or white if no lighting)
                 colorOut = litColor;
             }
 
@@ -687,6 +726,7 @@ function setupShaders() {
                 useTextureULoc = gl.getUniformLocation(shaderProgram, "uUseTexture"); // ptr to use texture flag
                 blendModeULoc = gl.getUniformLocation(shaderProgram, "uBlendMode"); // ptr to blend mode
                 alphaULoc = gl.getUniformLocation(shaderProgram, "uAlpha"); // ptr to alpha
+                useLightingULoc = gl.getUniformLocation(shaderProgram, "uUseLighting"); // ptr to use lighting flag
 
                 // pass global constants into fragment uniforms
                 gl.uniform3fv(eyePositionULoc,Eye); // pass in the eye's position
@@ -787,6 +827,9 @@ function renderModels() {
         var alpha = currSet.material.alpha !== undefined ? currSet.material.alpha : 1.0;
         gl.uniform1f(alphaULoc, alpha);
 
+        // lighting: enable or disable
+        gl.uniform1i(useLightingULoc, useLighting ? 1 : 0);
+
         // texture: bind if available
         if (textureArray[whichTriSet]) {
             gl.activeTexture(gl.TEXTURE0);
@@ -838,6 +881,9 @@ function renderModels() {
             var alpha = currSet.material.alpha !== undefined ? currSet.material.alpha : 1.0;
             gl.uniform1f(alphaULoc, alpha);
 
+            // lighting: enable or disable
+            gl.uniform1i(useLightingULoc, useLighting ? 1 : 0);
+
             // texture: bind if available
             if (textureArray[whichTriSet]) {
                 gl.activeTexture(gl.TEXTURE0);
@@ -867,37 +913,50 @@ function renderModels() {
         gl.disable(gl.BLEND); // disable blending
     }
     
-    // render each ellipsoid (ellipsoids don't have textures or transparency in this assignment)
-    var ellipsoid, instanceTransform = mat4.create(); // the current ellipsoid and material
+    // render each ellipsoid (only show textured ellipsoids in Part 5 mode)
+    if (part5Mode) {
+        var ellipsoid, instanceTransform = mat4.create(); // the current ellipsoid and material
 
-    for (var whichEllipsoid=0; whichEllipsoid<numEllipsoids; whichEllipsoid++) {
-        ellipsoid = inputEllipsoids[whichEllipsoid];
+        for (var whichEllipsoid=0; whichEllipsoid<numEllipsoids; whichEllipsoid++) {
+            ellipsoid = inputEllipsoids[whichEllipsoid];
 
-        // define model transform, premult with pvmMatrix, feed to vertex shader
-        makeModelTransform(ellipsoid);
-        pvmMatrix = mat4.multiply(pvmMatrix,pvMatrix,mMatrix); // premultiply with pv matrix
-        gl.uniformMatrix4fv(mMatrixULoc, false, mMatrix); // pass in model matrix
-        gl.uniformMatrix4fv(pvmMatrixULoc, false, pvmMatrix); // pass in project view model matrix
+            // define model transform, premult with pvmMatrix, feed to vertex shader
+            makeModelTransform(ellipsoid);
+            pvmMatrix = mat4.multiply(pvmMatrix,pvMatrix,mMatrix); // premultiply with pv matrix
+            gl.uniformMatrix4fv(mMatrixULoc, false, mMatrix); // pass in model matrix
+            gl.uniformMatrix4fv(pvmMatrixULoc, false, pvmMatrix); // pass in project view model matrix
 
-        // reflectivity: feed to the fragment shader
-        gl.uniform3fv(ambientULoc,ellipsoid.ambient); // pass in the ambient reflectivity
-        gl.uniform3fv(diffuseULoc,ellipsoid.diffuse); // pass in the diffuse reflectivity
-        gl.uniform3fv(specularULoc,ellipsoid.specular); // pass in the specular reflectivity
-        gl.uniform1f(shininessULoc,ellipsoid.n); // pass in the specular exponent
+            // reflectivity: feed to the fragment shader
+            gl.uniform3fv(ambientULoc,ellipsoid.ambient); // pass in the ambient reflectivity
+            gl.uniform3fv(diffuseULoc,ellipsoid.diffuse); // pass in the diffuse reflectivity
+            gl.uniform3fv(specularULoc,ellipsoid.specular); // pass in the specular reflectivity
+            gl.uniform1f(shininessULoc,ellipsoid.n); // pass in the specular exponent
 
-        // ellipsoids don't have textures
-        gl.uniform1i(useTextureULoc, 0);
-        gl.uniform1f(alphaULoc, 1.0); // ellipsoids are opaque
+            // Part 5: apply texture to ellipsoids
+            if (ellipsoidTexture) {
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_2D, ellipsoidTexture);
+                gl.uniform1i(textureULoc, 0);
+                gl.uniform1i(useTextureULoc, 1);
+                gl.uniform1i(blendModeULoc, blendMode);
+            } else {
+                gl.uniform1i(useTextureULoc, 0);
+            }
+            gl.uniform1f(alphaULoc, 1.0); // ellipsoids are opaque
+            gl.uniform1i(useLightingULoc, useLighting ? 1 : 0); // lighting for ellipsoids
 
-        gl.bindBuffer(gl.ARRAY_BUFFER,vertexBuffers[numTriangleSets+whichEllipsoid]); // activate vertex buffer
-        gl.vertexAttribPointer(vPosAttribLoc,3,gl.FLOAT,false,0,0); // feed vertex buffer to shader
-        gl.bindBuffer(gl.ARRAY_BUFFER,normalBuffers[numTriangleSets+whichEllipsoid]); // activate normal buffer
-        gl.vertexAttribPointer(vNormAttribLoc,3,gl.FLOAT,false,0,0); // feed normal buffer to shader
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,triangleBuffers[numTriangleSets+whichEllipsoid]); // activate tri buffer
+            gl.bindBuffer(gl.ARRAY_BUFFER,vertexBuffers[numTriangleSets+whichEllipsoid]); // activate vertex buffer
+            gl.vertexAttribPointer(vPosAttribLoc,3,gl.FLOAT,false,0,0); // feed vertex buffer to shader
+            gl.bindBuffer(gl.ARRAY_BUFFER,normalBuffers[numTriangleSets+whichEllipsoid]); // activate normal buffer
+            gl.vertexAttribPointer(vNormAttribLoc,3,gl.FLOAT,false,0,0); // feed normal buffer to shader
+            gl.bindBuffer(gl.ARRAY_BUFFER,uvBuffers[numTriangleSets+whichEllipsoid]); // activate uv buffer
+            gl.vertexAttribPointer(vUVAttribLoc,2,gl.FLOAT,false,0,0); // feed uv buffer to shader
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,triangleBuffers[numTriangleSets+whichEllipsoid]); // activate tri buffer
 
-        // draw a transformed instance of the ellipsoid
-        gl.drawElements(gl.TRIANGLES,triSetSizes[numTriangleSets+whichEllipsoid],gl.UNSIGNED_SHORT,0); // render
-    } // end for each ellipsoid
+            // draw a transformed instance of the ellipsoid
+            gl.drawElements(gl.TRIANGLES,triSetSizes[numTriangleSets+whichEllipsoid],gl.UNSIGNED_SHORT,0); // render
+        } // end for each ellipsoid
+    } // end if part5Mode
 } // end render model
 
 
