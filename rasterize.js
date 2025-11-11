@@ -29,6 +29,7 @@ var blendMode = 0; // 0 = modulate, 1 = replace
 var useLighting = true; // whether to use lighting (false for Part 2, true for Parts 3-4)
 var part5Mode = false; // flag for part 5 "make it your own" mode
 var ellipsoidTexture = null; // texture for ellipsoids in part 5
+var ellipsoidRotationAngle = 0; // rotation angle for ellipsoids in part 5
 
 /* shader parameter locations */
 var vPosAttribLoc; // where to put position for vertex shader
@@ -91,14 +92,37 @@ function loadTexture(url) {
 
     // Load the actual image asynchronously
     var image = new Image();
-    image.crossOrigin = "Anonymous";
+    // Only set crossOrigin for remote URLs, not local files
+    if (url.startsWith("http://") || url.startsWith("https://")) {
+        image.crossOrigin = "Anonymous";
+    }
     image.onload = function() {
         gl.bindTexture(gl.TEXTURE_2D, texture);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        
+        // Check if texture is power of 2
+        var isPowerOf2 = function(value) {
+            return (value & (value - 1)) === 0;
+        };
+        var isPOT = isPowerOf2(image.width) && isPowerOf2(image.height);
+        
+        if (isPOT) {
+            // Power of 2: can use REPEAT and mipmaps
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        } else {
+            // Non-power of 2: must use CLAMP_TO_EDGE and no mipmaps
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        }
+        console.log("Texture loaded successfully: " + url + " (size: " + image.width + "x" + image.height + ", POT: " + isPOT + ")");
+    };
+    image.onerror = function() {
+        console.error("Failed to load texture: " + url);
     };
     image.src = url;
 
@@ -343,7 +367,7 @@ function loadModels() {
                 
                 // make vertices and UVs
                 var ellipsoidVertices = [0,-1,0]; // vertices to return, init to south pole
-                var ellipsoidUVs = [0.5, 0.0]; // UVs to return, init to south pole UV
+                var ellipsoidUVs = [0.5, 1.0]; // UVs to return, init to south pole UV (flipped V)
                 var angleIncr = (Math.PI+Math.PI) / numLongSteps; // angular increment
                 var latLimitAngle = angleIncr * (Math.floor(numLongSteps/4)-1); // start/end lat angle
                 var latRadius, latY; // radius and Y at current latitude
@@ -356,14 +380,14 @@ function loadModels() {
                         ellipsoidVertices.push(latRadius*Math.sin(longAngle),latY,latRadius*Math.cos(longAngle));
                         // Generate UV coordinates (spherical mapping)
                         var u = 1.0 - (longIndex / numLongSteps);
-                        var v = (latIndex + 1) / (numLongSteps/2);
+                        var v = 1.0 - ((latIndex + 1) / (numLongSteps/2)); // flip V coordinate to fix upside-down texture
                         ellipsoidUVs.push(u, v);
                         longIndex++;
                     }
                     latIndex++;
                 } // end for each latitude
                 ellipsoidVertices.push(0,1,0); // add north pole
-                ellipsoidUVs.push(0.5, 1.0); // add north pole UV
+                ellipsoidUVs.push(0.5, 0.0); // add north pole UV (flipped V)
                 ellipsoidVertices = ellipsoidVertices.map(function(val,idx) { // position and scale ellipsoid
                     switch (idx % 3) {
                         case 0: // x
@@ -549,8 +573,10 @@ function loadModels() {
                 } // end for each ellipsoid
 
                 // Load texture for ellipsoids (for part 5)
-                var ellipsoidTextureURL = INPUT_TRIANGLES_URL.substring(0, INPUT_TRIANGLES_URL.lastIndexOf("/") + 1) + "images.jpeg";
-                ellipsoidTexture = loadTexture(ellipsoidTextureURL);
+                // Use local images.jpeg file
+                console.log("Loading ellipsoid texture: images.jpeg");
+                ellipsoidTexture = loadTexture("images.jpeg");
+                console.log("Ellipsoid texture object created:", ellipsoidTexture);
 
                 viewDelta = vec3.length(vec3.subtract(temp,maxCorner,minCorner)) / 100; // set global
             } // end if ellipsoid file loaded
@@ -660,7 +686,7 @@ function setupShaders() {
                     // modulate: multiply texture with lighting (only when lighting is on)
                     colorOut = litColor * texColor.rgb;
                 } else {
-                    // replace: use texture color directly (Part 2: unlit texture)
+                    // replace: use texture color directly (Part 2: unlit texture, or Part 5 ellipsoids)
                     colorOut = texColor.rgb;
                 }
                 // use texture alpha combined with material alpha
@@ -933,17 +959,24 @@ function renderModels() {
             gl.uniform1f(shininessULoc,ellipsoid.n); // pass in the specular exponent
 
             // Part 5: apply texture to ellipsoids
+            // Always bind texture first, before setting uniforms
+            gl.activeTexture(gl.TEXTURE0);
             if (ellipsoidTexture) {
-                gl.activeTexture(gl.TEXTURE0);
                 gl.bindTexture(gl.TEXTURE_2D, ellipsoidTexture);
                 gl.uniform1i(textureULoc, 0);
                 gl.uniform1i(useTextureULoc, 1);
-                gl.uniform1i(blendModeULoc, blendMode);
+                // Use replace mode (1) for ellipsoids so texture shows through properly
+                gl.uniform1i(blendModeULoc, 1);
+                // Disable lighting for ellipsoids in Part 5 to show texture clearly
+                gl.uniform1i(useLightingULoc, 0);
             } else {
+                console.warn("Ellipsoid texture is null!");
+                gl.bindTexture(gl.TEXTURE_2D, null);
                 gl.uniform1i(useTextureULoc, 0);
+                // If no texture, use lighting
+                gl.uniform1i(useLightingULoc, useLighting ? 1 : 0);
             }
             gl.uniform1f(alphaULoc, 1.0); // ellipsoids are opaque
-            gl.uniform1i(useLightingULoc, useLighting ? 1 : 0); // lighting for ellipsoids
 
             gl.bindBuffer(gl.ARRAY_BUFFER,vertexBuffers[numTriangleSets+whichEllipsoid]); // activate vertex buffer
             gl.vertexAttribPointer(vPosAttribLoc,3,gl.FLOAT,false,0,0); // feed vertex buffer to shader
