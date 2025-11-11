@@ -573,9 +573,9 @@ function loadModels() {
                 } // end for each ellipsoid
 
                 // Load texture for ellipsoids (for part 5)
-                // Use local images.jpeg file
-                console.log("Loading ellipsoid texture: images.jpeg");
-                ellipsoidTexture = loadTexture("images.jpeg");
+                // Use local lebronjames.jpeg file
+                console.log("Loading ellipsoid texture: lebronjames.jpeg");
+                ellipsoidTexture = loadTexture("lebronjames.jpeg");
                 console.log("Ellipsoid texture object created:", ellipsoidTexture);
 
                 viewDelta = vec3.length(vec3.subtract(temp,maxCorner,minCorner)) / 100; // set global
